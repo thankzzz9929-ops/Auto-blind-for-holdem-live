@@ -148,7 +148,9 @@
   body.overlay .blinds { margin: 0; gap: 2vw; align-items: center; flex-wrap: nowrap; }
   body.overlay .blind-box { background: none; border: 0; padding: 0; min-width: 0; }
   body.overlay .blind-box span { display: none; }
-  body.overlay .blind-box b, body.overlay .slash { font-size: clamp(60px, 12vw, 220px); }
+  /* 방송용 숫자 크기: 기본 0.5배. 주소에 &size=0.7 처럼 붙이면 그 배율로 바뀜 */
+  body.overlay .blind-box b, body.overlay .slash { font-size: calc(clamp(60px, 12vw, 220px) * var(--ov-scale, 0.5)); }
+  body.overlay .break-msg { font-size: calc(clamp(40px, 6vw, 110px) * var(--ov-scale, 0.5) * 1.6); }
   body.overlay .slash { display: block; }
   body.chroma .progress { background: #111; }
 
@@ -461,6 +463,8 @@
   const OVERLAY = IS_CHROMA || params.has('overlay') || MODE === 'overlay' || params.has('room');
   if (OVERLAY) {
     document.body.classList.add('overlay');
+    const sz = parseFloat(params.get('size'));
+    if (sz > 0 && sz <= 5) document.documentElement.style.setProperty('--ov-scale', sz);
     if (IS_CHROMA) {
       const color = '#' + (params.get('chroma') || '00ff00').replace('#', '');
       document.body.classList.add('chroma');
