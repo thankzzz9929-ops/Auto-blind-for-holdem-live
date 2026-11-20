@@ -232,6 +232,29 @@
     .structure { max-height: 260px; border-left: 0; border-top: 1px solid var(--line); }
     #editor { flex-direction: column; }
     .tpl-list { width: 100%; max-height: 220px; }
+
+    /* 폰 조작 화면: 화면이 넘치면 스크롤, 조작 버튼은 항상 아래에 붙어 있게 */
+    html:not(:has(body.overlay)), body:not(.overlay) { height: auto; min-height: 100%; }
+    body:not(.overlay) .view.active { flex: none; }
+    body:not(.overlay) .display-grid { flex: none; }
+    body:not(.overlay) header { padding: 8px 12px; }
+    body:not(.overlay) .brand { font-size: 13px; }
+    body:not(.overlay) nav { display: flex; gap: 6px; }
+    body:not(.overlay) nav button { margin: 0; padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+    body:not(.overlay) .clock { padding: 14px 10px; gap: 8px; }
+    body:not(.overlay) .timer { font-size: clamp(64px, 24vw, 140px); }
+    body:not(.overlay) .blinds { flex-wrap: nowrap; gap: 6px; width: 100%; margin-top: 4px; }
+    body:not(.overlay) .blind-box { flex: 1 1 0; min-width: 0; padding: 8px 4px; border-radius: 10px; }
+    body:not(.overlay) .blind-box span { font-size: 10px; letter-spacing: 1px; }
+    body:not(.overlay) .blind-box b { font-size: clamp(20px, 7.5vw, 40px); }
+    body:not(.overlay) .meta { gap: 12px; font-size: 12px; }
+    body:not(.overlay) .controls {
+      position: sticky; bottom: 0; z-index: 10;
+      padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+    }
+    body:not(.overlay) .controls button { padding: 10px 4px; font-size: 14px; }
+    body:not(.overlay) .controls #btnToggle { order: -1; flex: 1 1 100%; padding: 14px; font-size: 18px; }
+    body:not(.overlay) .controls input { order: 10; }
   }
 </style>
 </head>
@@ -703,7 +726,8 @@
       return `<div class="${cls}" data-i="${i}"><span>${label}</span><span>${body}</span><span class="m">${lv.minutes}분</span></div>`;
     }).join('');
     const cur = list.querySelector('.current');
-    if (cur) cur.scrollIntoView({ block: 'center' });
+    // 페이지 전체가 아니라 구조표 목록 안에서만 스크롤 (폰에서 화면이 튀지 않게)
+    if (cur) list.scrollTop = cur.offsetTop - list.offsetTop - (list.clientHeight - cur.offsetHeight) / 2;
   }
 
   function renderClockSelect() {
