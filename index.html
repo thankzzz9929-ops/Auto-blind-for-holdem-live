@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>홀덤 블라인드 타이머</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#0b1410">
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #0b1410;
+    --felt: #0f3d2a;
+    --felt2: #145236;
+    --panel: #13201a;
+    --line: #25382e;
+    --text: #eef5f0;
+    --muted: #8fa89a;
+    --gold: #f2c14e;
+    --red: #ff5a5a;
+    --blue: #5ab0ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  button, input, select {
+    font: inherit; color: inherit;
+  }
+  button {
+    background: #1d2f26; border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 14px; cursor: pointer; transition: background .15s;
+  }
+  button:hover { background: #26402f; }
+  button.primary { background: var(--gold); color: #1a1a1a; border-color: var(--gold); font-weight: 700; }
+  button.primary:hover { background: #ffd36b; }
+  button.danger { color: var(--red); }
+  input, select {
+    background: #0c1712; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+  }
+  input:focus, select:focus { outline: 1px solid var(--gold); }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px; background: #08100c; border-bottom: 1px solid var(--line);
+  }
+  .brand { font-weight: 800; letter-spacing: 1px; color: var(--gold); }
+  nav button { margin-left: 6px; }
+  nav button.active { background: var(--felt2); border-color: var(--gold); }
+
+  .view { display: none; flex: 1; min-height: 0; }
+  .view.active { display: flex; }
+
+  /* ===== Display ===== */
+  #display { flex-direction: column; }
+  .display-grid {
+    flex: 1; min-height: 0;
+    display: grid; grid-template-columns: 1fr 320px;
+  }
+  .clock {
+    background: radial-gradient(ellipse at center, var(--felt2) 0%, var(--felt) 55%, #082417 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px; gap: 1.2vh; text-align: center; position: relative;
+  }
+  .event-name { font-size: clamp(18px, 2.4vw, 34px); font-weight: 700; color: var(--gold); min-height: 1.2em; }
+  .level-label { font-size: clamp(22px, 3.2vw, 48px); font-weight: 800; letter-spacing: 4px; }
+  .level-label.break { color: var(--blue); }
+  .timer {
+    font-size: clamp(80px, 15vw, 260px); font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums; cursor: pointer; user-select: none;
+    text-shadow: 0 6px 30px rgba(0,0,0,.45);
+  }
+  .timer.warn { color: var(--red); animation: pulse 1s infinite; }
+  .timer.paused { opacity: .55; }
+  @keyframes pulse { 50% { opacity: .6; } }
+  .progress { width: min(900px, 90%); height: 10px; background: rgba(0,0,0,.35); border-radius: 5px; overflow: hidden; }
+  #progressBar { height: 100%; width: 0; background: var(--gold); transition: width .25s linear; }
+  .blinds { display: flex; gap: 2vw; margin-top: 1.5vh; flex-wrap: wrap; justify-content: center; }
+  .blind-box {
+    background: rgba(0,0,0,.3); border: 1px solid rgba(255,255,255,.12); border-radius: 14px;
+    padding: 1.2vh 2.5vw; min-width: 180px;
+  }
+  .blind-box span { display: block; font-size: clamp(12px, 1.1vw, 18px); color: var(--muted); letter-spacing: 2px; }
+  /* 블라인드 숫자 폰트: 기기에 Helvetica Neue가 없으면 fonts/ 폴더의 파일 → Helvetica → Arial 순으로 대체 */
+  @font-face {
+    font-family: 'BlindFont';
+    font-weight: 700 900;
+    src: local('Helvetica Neue Bold'), local('HelveticaNeue-Bold'),
+         url('fonts/HelveticaNeue-Bold.woff2') format('woff2'),
+         url('fonts/HelveticaNeue-Bold.otf') format('opentype'),
+         url('fonts/HelveticaNeue-Bold.ttf') format('truetype');
+  }
+  .blind-box b, .slash { font-family: 'BlindFont', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; }
+  .blind-box b { font-size: clamp(34px, 5vw, 90px); font-variant-numeric: tabular-nums; }
+  .break-msg { font-size: clamp(40px, 6vw, 110px); font-weight: 800; color: var(--blue); display: none; }
+  .next { font-size: clamp(16px, 1.8vw, 28px); color: var(--muted); }
+  .next b { color: var(--text); }
+  .meta { display: flex; gap: 3vw; font-size: clamp(13px, 1.2vw, 18px); color: var(--muted); }
+  .meta b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .paused-badge {
+    position: absolute; top: 16px; right: 16px; background: var(--red); color: #fff;
+    padding: 4px 12px; border-radius: 6px; font-weight: 700; letter-spacing: 2px; display: none;
+  }
+
+  .structure { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .structure h3 { margin: 0; padding: 12px 14px; font-size: 14px; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .structure select { margin: 10px 14px; }
+  .structure .list { overflow-y: auto; flex: 1; }
+  .srow {
+    display: grid; grid-template-columns: 38px 1fr 60px; gap: 6px; padding: 7px 14px;
+    font-size: 14px; border-bottom: 1px solid #1a2a22; cursor: pointer; font-variant-numeric: tabular-nums;
+  }
+  .srow:hover { background: #1a2b22; }
+  .srow.done { color: #5d7266; }
+  .srow.current { background: var(--gold); color: #1a1a1a; font-weight: 700; }
+  .srow.brk { color: var(--blue); }
+  .srow.brk.current { background: var(--blue); color: #08131c; }
+  .srow .m { text-align: right; }
+
+  .controls {
+    display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+    padding: 12px; background: #08100c; border-top: 1px solid var(--line);
+  }
+  .controls button { min-width: 80px; }
+  .controls input { width: 220px; }
+
+  body.fs header, body.fs .structure, body.fs .controls { display: none; }
+  body.fs .display-grid { grid-template-columns: 1fr; }
+
+  /* 방송용 오버레이 (?overlay = 투명, ?chroma = 크로마키 배경) */
+  body.overlay { background: transparent; }
+  body.overlay header, body.overlay .structure, body.overlay .controls { display: none; }
+  body.overlay .display-grid { grid-template-columns: 1fr; }
+  body.overlay .clock { background: transparent; }
+  body.overlay .clock > * { text-shadow: 0 2px 4px #000, 0 0 12px rgba(0,0,0,.8); }
+  body.overlay .paused-badge { display: none !important; }
+  body.overlay .progress { background: rgba(0,0,0,.6); }
+  /* 방송용 창에는 SB / BB만 표시 (휴식 중에는 BREAK 표시) */
+  body.overlay .event-name, body.overlay .level-label, body.overlay .timer, body.overlay .progress,
+  body.overlay .next, body.overlay .meta, body.overlay .ante-box { display: none; }
+  .slash { display: none; }
+  body.overlay .blinds { margin: 0; gap: 2vw; align-items: center; flex-wrap: nowrap; }
+  body.overlay .blind-box { background: none; border: 0; padding: 0; min-width: 0; }
+  body.overlay .blind-box span { display: none; }
+  body.overlay .blind-box b, body.overlay .slash { font-size: clamp(60px, 12vw, 220px); }
+  body.overlay .slash { display: block; }
+  body.chroma .progress { background: #111; }
+
+  /* ===== Editor ===== */
+  #editor { gap: 0; }
+  .tpl-list { width: 260px; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+  .tpl-list h3 { margin: 0; padding: 14px; font-size: 14px; color: var(--muted); }
+  .tpl-items { flex: 1; overflow-y: auto; }
+  .tpl-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #1a2a22; }
+  .tpl-item:hover { background: #1a2b22; }
+  .tpl-item.active { background: var(--felt2); border-left: 3px solid var(--gold); }
+  .tpl-item small { display: block; color: var(--muted); }
+  .tpl-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px; border-top: 1px solid var(--line); }
+
+  .tpl-edit { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .row label { color: var(--muted); font-size: 13px; }
+  #tplName { font-size: 18px; width: 320px; font-weight: 700; }
+  .gen {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 18px;
+  }
+  .gen summary { cursor: pointer; font-weight: 700; color: var(--gold); }
+  .gen-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+  .gen-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 12px; color: var(--muted); padding: 6px; border-bottom: 1px solid var(--line); }
+  td { padding: 4px 6px; border-bottom: 1px solid #1a2a22; }
+  td input { width: 100%; min-width: 70px; }
+  tr.brk td { background: rgba(90,176,255,.07); }
+  tr.brk .lv { color: var(--blue); font-weight: 700; }
+  .lv { width: 60px; color: var(--muted); }
+  .acts { white-space: nowrap; width: 1%; }
+  .acts button { padding: 4px 8px; }
+  .summary { color: var(--muted); font-size: 13px; margin: 10px 0; }
+  .dirty { color: var(--gold); font-size: 13px; }
+
+  /* 원격 연동 창 */
+  dialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+    width: min(560px, calc(100vw - 32px)); padding: 20px;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h3 { margin: 0 0 14px; color: var(--gold); }
+  dialog .field { margin-bottom: 14px; }
+  dialog .field > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  dialog .copy-row { display: flex; gap: 6px; }
+  dialog .copy-row input { flex: 1; min-width: 0; font-size: 13px; }
+  dialog .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .sync-status { font-weight: 700; }
+  .sync-status.on { color: #4cd07d; }
+  .sync-status.off { color: var(--muted); }
+  .sync-status.err { color: var(--red); }
+  .table-wrap { overflow-x: auto; }
+
+  /* 포스터로 불러오기 */
+  .poster { border-color: #4a3f1c; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .poster .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .drop {
+    margin-top: 12px; border: 2px dashed var(--line); border-radius: 10px; padding: 22px;
+    text-align: center; color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--gold); background: rgba(242,193,78,.06); }
+  .drop img { max-width: 100%; max-height: 260px; border-radius: 6px; display: block; margin: 0 auto 8px; }
+  .poster-status { font-size: 13px; margin-top: 10px; min-height: 1.2em; }
+  .poster-status.err { color: var(--red); }
+  .poster-status.ok { color: #4cd07d; }
+  .poster textarea {
+    width: 100%; min-height: 110px; background: #0c1712; border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; color: inherit;
+  }
+  .poster .sub { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .poster .sub > b { font-size: 13px; color: var(--muted); }
+
+  @media (max-width: 800px) {
+    .controls button { min-width: 0; flex: 1 1 28%; padding: 12px 6px; }
+    .controls input { width: 100%; }
+    .tpl-edit { padding: 16px; }
+    #tplName { width: 100%; }
+    .display-grid { grid-template-columns: 1fr; }
+    .structure { max-height: 260px; border-left: 0; border-top: 1px solid var(--line); }
+    #editor { flex-direction: column; }
+    .tpl-list { width: 100%; max-height: 220px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">♠ HOLD'EM BLIND CLOCK</div>
+  <nav>
+    <button class="tab active" data-tab="display">블라인드 표시</button>
+    <button class="tab" data-tab="editor">템플릿 편집</button>
+  </nav>
+</header>
+
+<!-- ===================== 블라인드 표시 ===================== -->
+<section id="display" class="view active">
+  <div class="display-grid">
+    <div class="clock">
+      <div class="paused-badge" id="pausedBadge">PAUSED</div>
+      <div class="event-name" id="eventTitle"></div>
+      <div class="level-label" id="levelLabel">LEVEL 1</div>
+      <div class="timer paused" id="timer" title="클릭: 시작/일시정지">00:00</div>
+      <div class="progress"><div id="progressBar"></div></div>
+      <div class="blinds" id="blindsBox">
+        <div class="blind-box"><span>SMALL BLIND</span><b id="sb">0</b></div>
+        <div class="slash">/</div>
+        <div class="blind-box"><span>BIG BLIND</span><b id="bb">0</b></div>
+        <div class="blind-box ante-box"><span>ANTE</span><b id="ante">0</b></div>
+      </div>
+      <div class="break-msg" id="breakMsg">☕ BREAK TIME</div>
+      <div class="next">NEXT : <b id="nextInfo">-</b></div>
+      <div class="meta">
+        <div>다음 휴식까지 <b id="nextBreak">-</b></div>
+        <div>경과 시간 <b id="elapsed">0:00:00</b></div>
+      </div>
+    </div>
+
+    <aside class="structure">
+      <h3>블라인드 구조</h3>
+      <select id="clockTemplate"></select>
+      <div class="list" id="structureList"></div>
+    </aside>
+  </div>
+
+  <div class="controls">
+    <input id="eventName" placeholder="토너먼트 이름 (화면 표시)">
+    <button id="btnPrev">⏮ 이전</button>
+    <button id="btnMinus">-1분</button>
+    <button id="btnToggle" class="primary">▶ 시작</button>
+    <button id="btnPlus">+1분</button>
+    <button id="btnNext">다음 ⏭</button>
+    <button id="btnReset">↺ 리셋</button>
+    <button id="btnSound">🔊 소리 ON</button>
+    <button id="btnFull">⛶ 전체화면</button>
+    <button id="btnOverlay" title="크로마키 배경의 방송용 창을 엽니다 (이 창과 실시간 동기화)">📺 방송용 창</button>
+    <button id="btnSync">📡 원격 연동</button>
+  </div>
+</section>
+
+<dialog id="syncDialog">
+  <h3>📡 원격 연동</h3>
+  <div class="field">
+    <label><input type="checkbox" id="syncEnabled"> 연동 켜기 (이 기기가 조작 기기가 됩니다)</label>
+    상태: <span class="sync-status off" id="syncStatus">꺼짐</span>
+  </div>
+  <div class="field">
+    <label>방 코드</label>
+    <div class="copy-row">
+      <input id="roomCode" readonly>
+      <button id="btnNewRoom">새 코드</button>
+    </div>
+  </div>
+  <div class="field">
+    <label>방송용 URL — 투명 배경 (PRISM 웹 소스)</label>
+    <div class="copy-row"><input id="urlOverlay" readonly><button data-copy="urlOverlay">복사</button></div>
+  </div>
+  <div class="field">
+    <label>방송용 URL — 크로마키 배경</label>
+    <div class="copy-row"><input id="urlChroma" readonly><button data-copy="urlChroma">복사</button></div>
+  </div>
+  <p class="hint" id="syncHint">
+    방송 PC의 PRISM에서 소스 추가 → 웹 → 위 URL을 붙여넣으세요.<br>
+    방송 화면이 레벨 종료 시각을 받아 스스로 계산하므로, 이 기기가 백그라운드에 있거나 화면이 꺼져도 방송 화면의 타이머는 계속 진행됩니다.
+    시작·정지·레벨 이동 같은 조작만 인터넷으로 전달됩니다.
+  </p>
+  <div class="row" style="justify-content: flex-end; margin: 0">
+    <button id="btnSyncClose" class="primary">닫기</button>
+  </div>
+</dialog>
+
+<!-- ===================== 템플릿 편집 ===================== -->
+<section id="editor" class="view">
+  <div class="tpl-list">
+    <h3>저장된 템플릿</h3>
+    <div class="tpl-items" id="tplItems"></div>
+    <div class="tpl-actions">
+      <button id="btnNew">+ 새로 만들기</button>
+      <button id="btnDup">복제</button>
+      <button id="btnExport">내보내기</button>
+      <button id="btnImport">가져오기</button>
+      <button id="btnDelete" class="danger" style="grid-column: span 2">삭제</button>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
+    </div>
+  </div>
+
+  <div class="tpl-edit">
+    <div class="row">
+      <input id="tplName" placeholder="템플릿 이름">
+      <button id="btnSave" class="primary">💾 저장</button>
+      <button id="btnUseNow">▶ 이 템플릿으로 시작</button>
+      <span class="dirty" id="dirtyMark"></span>
+    </div>
+
+    <details class="gen poster" open>
+      <summary>🖼 펍 포스터로 불러오기</summary>
+      <div class="drop" id="posterDrop" tabindex="0">
+        <div id="posterPreview"></div>
+        <div id="posterDropText">여기를 눌러 포스터 사진(JPG/PNG)을 고르거나, 끌어다 놓거나, Ctrl+V로 붙여넣으세요</div>
+      </div>
+      <input type="file" id="posterFile" accept="image/*" hidden>
+      <div class="row" style="margin: 12px 0 0">
+        <button id="btnPosterRead" class="primary" disabled>🔍 포스터 읽어서 새 템플릿 만들기</button>
+        <button id="btnPosterKey">🔑 API 키 설정</button>
+      </div>
+      <div class="gen-grid" id="posterKeyBox" style="display:none">
+        <label style="grid-column: 1 / -1">Claude API 키 (이 기기 브라우저에만 저장됩니다)
+          <input type="password" id="posterApiKey" placeholder="sk-ant-..." autocomplete="off"></label>
+        <label>모델<input id="posterModel" value="claude-sonnet-5-5"></label>
+        <label>시간 정보 없을 때 레벨 시간(분)<input type="number" id="posterDefMin" value="20" min="1"></label>
+      </div>
+      <div class="poster-status" id="posterStatus"></div>
+
+      <div class="sub">
+        <b>API 키 없이 쓰기</b>
+        <p class="hint" style="margin: 6px 0 8px">
+          ① [프롬프트 복사] → ② Claude 앱에 포스터 사진과 함께 붙여넣기 → ③ 답변을 아래 칸에 붙여넣고 [적용]<br>
+          포스터 표를 직접 옮겨 적어도 됩니다. 예) <code>1  100/200  200  20분</code> · <code>휴식 10분</code>
+        </p>
+        <textarea id="posterText" placeholder='{"name":"...","levels":[...]}  또는  한 줄에 한 레벨씩'></textarea>
+        <div class="row" style="margin: 8px 0 0">
+          <button id="btnPosterPrompt">📋 프롬프트 복사</button>
+          <button id="btnPosterApply">적용 (새 템플릿)</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="gen">
+      <summary>⚙ 블라인드 자동 생성</summary>
+      <div class="gen-grid">
+        <label>시작 BB<input type="number" id="gStartBB" value="200" min="2"></label>
+        <label>레벨 수<input type="number" id="gCount" value="20" min="1" max="100"></label>
+        <label>레벨 시간(분)<input type="number" id="gMin" value="20" min="1"></label>
+        <label>증가율 (배)<input type="number" id="gMult" value="1.5" step="0.05" min="1.05"></label>
+        <label>앤티 방식
+          <select id="gAnte">
+            <option value="bb">BB 앤티 (=BB)</option>
+            <option value="classic">일반 앤티 (BB의 약 1/8)</option>
+            <option value="none">앤티 없음</option>
+          </select>
+        </label>
+        <label>앤티 시작 레벨<input type="number" id="gAnteFrom" value="3" min="1"></label>
+        <label>휴식 간격 (레벨, 0=없음)<input type="number" id="gBreakEvery" value="4" min="0"></label>
+        <label>휴식 시간(분)<input type="number" id="gBreakMin" value="10" min="1"></label>
+      </div>
+      <div class="row" style="margin: 12px 0 0">
+        <button id="btnGenerate" class="primary">생성 (현재 구조 대체)</button>
+      </div>
+    </details>
+
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>레벨</th><th>SB</th><th>BB</th><th>앤티</th><th>시간(분)</th><th></th></tr>
+      </thead>
+      <tbody id="levelRows"></tbody>
+    </table>
+    </div>
+    <div class="summary" id="tplSummary"></div>
+    <div class="row">
+      <button id="btnAddLevel">+ 레벨 추가</button>
+      <button id="btnAddBreak">+ 휴식 추가</button>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const LS_TEMPLATES = 'holdem.templates';
+  const LS_CLOCK = 'holdem.clock';
+  const LS_SETTINGS = 'holdem.settings';
+
+  const $ = id => document.getElementById(id);
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  const fmt = n => Number(n || 0).toLocaleString('en-US');
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const clone = o => JSON.parse(JSON.stringify(o));
+
+  // ---------- 방송용 모드 ----------
+  const params = new URLSearchParams(location.search);
+  const OVERLAY = params.has('overlay') || params.has('chroma');
+  if (OVERLAY) {
+    document.body.classList.add('overlay');
+    if (params.has('chroma')) {
+      const color = '#' + (params.get('chroma') || '00ff00').replace('#', '');
+      document.body.classList.add('chroma');
+      document.documentElement.style.background = document.body.style.background = color;
+    } else {
+      document.documentElement.style.background = 'transparent';
+    }
+  }
+
+  // ?room=코드 가 붙은 방송용 화면은 인터넷으로 조작 기기의 상태를 받아서 표시만 함
+  const BROKER = params.get('broker') || 'wss://broker.hivemq.com:8884/mqtt';
+  const TOPIC_PREFIX = 'holdem-blind-clock/v1/';
+  const ROOM_PARAM = (params.get('room') || '').replace(/[^A-Za-z0-9]/g, '');
+  const REMOTE_VIEW = OVERLAY && !!ROOM_PARAM;
+
+  // ---------- 블라인드 생성 ----------
+  const NICE = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8];
+  function niceUp(x) {
+    const p = Math.pow(10, Math.floor(Math.log10(x)));
+    for (const scale of [1, 10]) {
+      for (const m of NICE) {
+        const n = Math.round(m * p * scale);
+        if (n >= x) return n;
+      }
+    }
+    return Math.ceil(x);
+  }
+  function niceNearest(x) {
+    const p = Math.pow(10, Math.floor(Math.log10(x)));
+    let best = p, diff = Infinity;
+    for (const m of [...NICE, 10]) {
+      const n = m * p, d = Math.abs(Math.log(n / x));
+      if (d < diff) { diff = d; best = n; }
+    }
+    return Math.round(best);
+  }
+
+  function generate({ startBB, count, minutes, mult, anteMode, anteFrom, breakEvery, breakMin }) {
+    const levels = [];
+    let bb = Math.max(2, Math.round(startBB));
+    for (let i = 1; i <= count; i++) {
+      const sb = Math.floor(bb / 2);
+      let ante = 0;
+      if (i >= anteFrom) {
+        if (anteMode === 'bb') ante = bb;
+        else if (anteMode === 'classic') ante = Math.max(1, niceNearest(bb / 8));
+      }
+      levels.push({ type: 'level', sb, bb, ante, minutes });
+      if (breakEvery > 0 && i % breakEvery === 0 && i < count) {
+        levels.push({ type: 'break', minutes: breakMin });
+      }
+      let next = niceNearest(bb * mult);
+      if (next <= bb) next = niceUp(bb + 1);
+      bb = next;
+    }
+    return levels;
+  }
+
+  const DEFAULT_TEMPLATES = [
+    { id: 'standard', name: '스탠다드 (20분)', levels: generate({ startBB: 200, count: 20, minutes: 20, mult: 1.4, anteMode: 'bb', anteFrom: 3, breakEvery: 4, breakMin: 10 }) },
+    { id: 'turbo', name: '터보 (10분)', levels: generate({ startBB: 200, count: 18, minutes: 10, mult: 1.5, anteMode: 'bb', anteFrom: 3, breakEvery: 6, breakMin: 5 }) },
+    { id: 'home', name: '홈게임 (15분, 앤티 없음)', levels: generate({ startBB: 50, count: 15, minutes: 15, mult: 1.5, anteMode: 'none', anteFrom: 1, breakEvery: 5, breakMin: 10 }) },
+  ];
+
+  // ---------- 상태 ----------
+  let templates = REMOTE_VIEW ? [{ id: 'remote', name: '', levels: [] }] : (load(LS_TEMPLATES) || clone(DEFAULT_TEMPLATES));
+  let clock = (!REMOTE_VIEW && load(LS_CLOCK)) || { templateId: templates[0].id, index: 0, remainingMs: null, running: false, endAt: 0 };
+  let settings = (!REMOTE_VIEW && load(LS_SETTINGS)) || { sound: true, eventName: '' };
+  if (!settings.room) settings.room = randomRoom();
+  let editId = templates[0].id;
+  let draft = null;
+  let dirty = false;
+  let warnedIndex = -1;
+
+  function load(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
+  function save(key, val) { if (!REMOTE_VIEW) localStorage.setItem(key, JSON.stringify(val)); }
+  const saveTemplates = () => { save(LS_TEMPLATES, templates); publishState(); };
+  const saveClock = () => { save(LS_CLOCK, clock); publishState(); };
+  const saveSettings = () => { save(LS_SETTINGS, settings); publishState(); };
+  function randomRoom() {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    const buf = crypto.getRandomValues(new Uint8Array(10));
+    return Array.from(buf, b => chars[b % chars.length]).join('');
+  }
+
+  // ---------- 탭 ----------
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === btn.dataset.tab));
+      if (btn.dataset.tab === 'editor') renderEditor();
+    });
+  });
+
+  // ---------- 사운드 ----------
+  let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  function beep(freq = 880, dur = 0.18, delay = 0) {
+    if (!settings.sound || !audioCtx || OVERLAY) return;
+    const t = audioCtx.currentTime + delay;
+    const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+    osc.type = 'sine'; osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.4, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t); osc.stop(t + dur + 0.05);
+  }
+  const soundLevelUp = () => { beep(880, .25, 0); beep(880, .25, .35); beep(1320, .5, .7); };
+  const soundWarning = () => { beep(660, .3, 0); };
+
+  // ---------- 타이머 로직 ----------
+  const curTpl = () => templates.find(t => t.id === clock.templateId) || templates[0];
+  const levelMs = i => ((curTpl().levels[i] || {}).minutes || 0) * 60000;
+  const remaining = () => clock.running ? clock.endAt - Date.now() : clock.remainingMs;
+
+  function normalizeClock() {
+    const t = curTpl();
+    clock.templateId = t.id;
+    if (clock.index >= t.levels.length) clock.index = Math.max(0, t.levels.length - 1);
+    if (clock.remainingMs == null) clock.remainingMs = levelMs(clock.index);
+  }
+
+  function goTo(i) {
+    const t = curTpl();
+    if (!t.levels.length) return;
+    clock.index = Math.min(Math.max(0, i), t.levels.length - 1);
+    clock.remainingMs = levelMs(clock.index);
+    if (clock.running) clock.endAt = Date.now() + clock.remainingMs;
+    warnedIndex = -1;
+    saveClock(); render();
+  }
+
+  function toggle() {
+    ensureAudio();
+    if (clock.running) {
+      clock.remainingMs = Math.max(0, remaining());
+      clock.running = false;
+    } else {
+      if (clock.remainingMs <= 0) {
+        if (clock.index >= curTpl().levels.length - 1) return;
+        clock.index++; clock.remainingMs = levelMs(clock.index);
+      }
+      clock.endAt = Date.now() + clock.remainingMs;
+      clock.running = true;
+    }
+    saveClock(); render();
+  }
+
+  function adjust(ms) {
+    if (clock.running) {
+      clock.endAt = Math.max(Date.now(), clock.endAt + ms);
+    } else {
+      clock.remainingMs = Math.max(0, clock.remainingMs + ms);
+    }
+    saveClock(); render();
+  }
+
+  function tick() {
+    const t = curTpl();
+    if (!t.levels.length) return;
+    if (clock.running) {
+      let rem = clock.endAt - Date.now();
+      let advanced = false;
+      while (rem <= 0) {
+        if (clock.index >= t.levels.length - 1) {
+          clock.running = false; clock.remainingMs = 0; rem = 0;
+          break;
+        }
+        clock.index++;
+        clock.endAt += levelMs(clock.index);
+        rem = clock.endAt - Date.now();
+        advanced = true;
+      }
+      if (advanced || !clock.running) { saveClock(); soundLevelUp(); warnedIndex = -1; }
+      if (clock.running && rem <= 60000 && warnedIndex !== clock.index && levelMs(clock.index) > 60000) {
+        warnedIndex = clock.index;
+        soundWarning();
+      }
+    }
+    render();
+  }
+
+  function levelNumber(levels, idx) {
+    let n = 0;
+    for (let i = 0; i <= idx; i++) if (levels[i].type === 'level') n++;
+    return n;
+  }
+  function formatTime(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const pad = v => String(v).padStart(2, '0');
+    return h ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+  }
+  const blindText = lv => `${fmt(lv.sb)} / ${fmt(lv.bb)}` + (lv.ante ? ` (${fmt(lv.ante)})` : '');
+
+  let lastStructureKey = '';
+  function render() {
+    const t = curTpl();
+    const levels = t.levels;
+    $('eventTitle').textContent = settings.eventName || '';
+    if (!levels.length) {
+      $('levelLabel').textContent = REMOTE_VIEW ? '연결 대기 중…' : '레벨이 없습니다';
+      $('timer').textContent = '00:00';
+      $('blindsBox').style.display = 'none';
+      $('breakMsg').style.display = 'none';
+      return;
+    }
+    const idx = clock.index;
+    const lv = levels[idx];
+    const rem = Math.max(0, remaining());
+    const total = levelMs(idx);
+    const isBreak = lv.type === 'break';
+
+    $('levelLabel').textContent = isBreak ? 'BREAK' : `LEVEL ${levelNumber(levels, idx)}`;
+    $('levelLabel').classList.toggle('break', isBreak);
+    $('timer').textContent = formatTime(rem);
+    $('timer').classList.toggle('warn', clock.running && rem <= 60000 && rem > 0);
+    $('timer').classList.toggle('paused', !clock.running);
+    $('pausedBadge').style.display = clock.running ? 'none' : 'block';
+    $('progressBar').style.width = total ? `${Math.min(100, (1 - rem / total) * 100)}%` : '0';
+
+    $('blindsBox').style.display = isBreak ? 'none' : 'flex';
+    $('breakMsg').style.display = isBreak ? 'block' : 'none';
+    if (!isBreak) {
+      $('sb').textContent = fmt(lv.sb);
+      $('bb').textContent = fmt(lv.bb);
+      $('ante').textContent = fmt(lv.ante);
+    }
+
+    const nx = levels[idx + 1];
+    $('nextInfo').textContent = !nx ? '마지막 레벨' : nx.type === 'break' ? `휴식 ${nx.minutes}분` : blindText(nx);
+
+    let toBreak = null, acc = rem;
+    for (let i = idx + 1; i < levels.length; i++) {
+      if (levels[i].type === 'break') { toBreak = acc; break; }
+      acc += levels[i].minutes * 60000;
+    }
+    $('nextBreak').textContent = isBreak ? '휴식 중' : toBreak == null ? '-' : formatTime(toBreak);
+
+    let elapsed = total - rem;
+    for (let i = 0; i < idx; i++) elapsed += levels[i].minutes * 60000;
+    const es = Math.floor(elapsed / 1000);
+    $('elapsed').textContent = `${Math.floor(es / 3600)}:${String(Math.floor(es % 3600 / 60)).padStart(2, '0')}:${String(es % 60).padStart(2, '0')}`;
+
+    $('btnToggle').textContent = clock.running ? '⏸ 일시정지' : '▶ 시작';
+
+    const key = t.id + '|' + idx + '|' + JSON.stringify(levels);
+    if (key !== lastStructureKey) { lastStructureKey = key; renderStructure(); }
+  }
+
+  function renderStructure() {
+    const t = curTpl();
+    const list = $('structureList');
+    let n = 0;
+    list.innerHTML = t.levels.map((lv, i) => {
+      const cls = ['srow', lv.type === 'break' ? 'brk' : '', i < clock.index ? 'done' : '', i === clock.index ? 'current' : ''].join(' ');
+      const label = lv.type === 'break' ? '☕' : ++n;
+      const body = lv.type === 'break' ? '휴식' : blindText(lv);
+      return `<div class="${cls}" data-i="${i}"><span>${label}</span><span>${body}</span><span class="m">${lv.minutes}분</span></div>`;
+    }).join('');
+    const cur = list.querySelector('.current');
+    if (cur) cur.scrollIntoView({ block: 'center' });
+  }
+
+  function renderClockSelect() {
+    $('clockTemplate').innerHTML = templates.map(t =>
+      `<option value="${t.id}" ${t.id === clock.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+  }
+
+  // ---------- 표시 화면 이벤트 ----------
+  $('btnToggle').onclick = toggle;
+  $('timer').onclick = toggle;
+  $('btnPrev').onclick = () => goTo(clock.index - 1);
+  $('btnNext').onclick = () => goTo(clock.index + 1);
+  $('btnPlus').onclick = () => adjust(60000);
+  $('btnMinus').onclick = () => adjust(-60000);
+  $('btnReset').onclick = () => {
+    if (!confirm('타이머를 레벨 1로 리셋할까요?')) return;
+    clock.running = false; goTo(0);
+  };
+  $('btnSound').onclick = () => {
+    settings.sound = !settings.sound; saveSettings(); updateSoundBtn();
+    if (settings.sound) { ensureAudio(); beep(); }
+  };
+  const updateSoundBtn = () => { $('btnSound').textContent = settings.sound ? '🔊 소리 ON' : '🔇 소리 OFF'; };
+  $('btnFull').onclick = () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  };
+  document.addEventListener('fullscreenchange', () => {
+    document.body.classList.toggle('fs', !!document.fullscreenElement);
+    lastStructureKey = '';
+  });
+  $('structureList').onclick = e => {
+    const row = e.target.closest('.srow');
+    if (row && confirm('이 레벨로 이동할까요?')) goTo(+row.dataset.i);
+  };
+  $('clockTemplate').onchange = e => {
+    if (!confirm('템플릿을 변경하면 타이머가 레벨 1로 초기화됩니다. 계속할까요?')) { renderClockSelect(); return; }
+    clock = { templateId: e.target.value, index: 0, remainingMs: null, running: false, endAt: 0 };
+    normalizeClock(); saveClock(); render();
+  };
+  $('eventName').value = settings.eventName || '';
+  $('eventName').oninput = e => { settings.eventName = e.target.value; saveSettings(); render(); };
+
+  document.addEventListener('keydown', e => {
+    if (REMOTE_VIEW || !$('display').classList.contains('active')) return;
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+    if (e.code === 'Space') { e.preventDefault(); toggle(); }
+    else if (e.key === 'ArrowRight') goTo(clock.index + 1);
+    else if (e.key === 'ArrowLeft') goTo(clock.index - 1);
+    else if (e.key === 'ArrowUp') adjust(60000);
+    else if (e.key === 'ArrowDown') adjust(-60000);
+    else if (e.key.toLowerCase() === 'f') $('btnFull').click();
+  });
+
+  // ---------- 템플릿 편집 ----------
+  function setDirty(v) { dirty = v; $('dirtyMark').textContent = v ? '● 저장되지 않은 변경사항' : ''; }
+
+  function selectTemplate(id) {
+    if (dirty && !confirm('저장하지 않은 변경사항이 있습니다. 버릴까요?')) return false;
+    editId = id;
+    draft = clone(templates.find(t => t.id === id) || templates[0]);
+    setDirty(false);
+    renderEditor();
+    return true;
+  }
+
+  function renderEditor() {
+    if (!draft || !templates.find(t => t.id === editId)) {
+      editId = templates[0].id; draft = clone(templates[0]); setDirty(false);
+    }
+    $('tplItems').innerHTML = templates.map(t => {
+      const lvCount = t.levels.filter(l => l.type === 'level').length;
+      return `<div class="tpl-item ${t.id === editId ? 'active' : ''}" data-id="${t.id}">
+        ${esc(t.name)}<small>${lvCount}레벨 · ${formatDuration(t.levels)}</small></div>`;
+    }).join('');
+    $('tplName').value = draft.name;
+    renderRows();
+  }
+
+  function formatDuration(levels) {
+    const min = levels.reduce((a, l) => a + Number(l.minutes || 0), 0);
+    return `${Math.floor(min / 60)}시간 ${min % 60}분`;
+  }
+
+  function renderRows() {
+    let n = 0;
+    $('levelRows').innerHTML = draft.levels.map((lv, i) => {
+      const acts = `<td class="acts">
+        <button data-act="up" data-i="${i}" title="위로">↑</button>
+        <button data-act="down" data-i="${i}" title="아래로">↓</button>
+        <button data-act="ins" data-i="${i}" title="아래에 레벨 삽입">＋</button>
+        <button data-act="del" data-i="${i}" class="danger" title="삭제">✕</button></td>`;
+      const num = (k, v) => `<input type="number" min="0" data-i="${i}" data-k="${k}" value="${v}">`;
+      if (lv.type === 'break') {
+        return `<tr class="brk"><td class="lv">휴식</td><td colspan="3" style="color:var(--muted)">☕ Break</td>
+          <td>${num('minutes', lv.minutes)}</td>${acts}</tr>`;
+      }
+      return `<tr><td class="lv">${++n}</td><td>${num('sb', lv.sb)}</td><td>${num('bb', lv.bb)}</td>
+        <td>${num('ante', lv.ante)}</td><td>${num('minutes', lv.minutes)}</td>${acts}</tr>`;
+    }).join('');
+    const lvCount = draft.levels.filter(l => l.type === 'level').length;
+    const brCount = draft.levels.length - lvCount;
+    $('tplSummary').textContent = `총 ${lvCount}레벨 · 휴식 ${brCount}회 · 전체 ${formatDuration(draft.levels)}`;
+  }
+
+  $('tplItems').onclick = e => {
+    const item = e.target.closest('.tpl-item');
+    if (item && item.dataset.id !== editId) selectTemplate(item.dataset.id);
+  };
+  $('tplName').oninput = e => { draft.name = e.target.value; setDirty(true); };
+
+  $('levelRows').addEventListener('input', e => {
+    const { i, k } = e.target.dataset;
+    if (i == null || !k) return;
+    const v = Math.max(0, Number(e.target.value) || 0);
+    draft.levels[i][k] = v;
+    // BB 입력 시 SB를 BB의 절반으로 자동 채움 (이후 SB만 따로 수정 가능)
+    if (k === 'bb') {
+      const row = e.target.closest('tr');
+      const sbInput = row.querySelector('[data-k="sb"]');
+      draft.levels[i].sb = Math.floor(v / 2);
+      sbInput.value = draft.levels[i].sb;
+    }
+    setDirty(true);
+    const lvCount = draft.levels.filter(l => l.type === 'level').length;
+    $('tplSummary').textContent = `총 ${lvCount}레벨 · 휴식 ${draft.levels.length - lvCount}회 · 전체 ${formatDuration(draft.levels)}`;
+  });
+
+  $('levelRows').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const i = +btn.dataset.i, L = draft.levels;
+    switch (btn.dataset.act) {
+      case 'up': if (i > 0) [L[i - 1], L[i]] = [L[i], L[i - 1]]; break;
+      case 'down': if (i < L.length - 1) [L[i + 1], L[i]] = [L[i], L[i + 1]]; break;
+      case 'del': L.splice(i, 1); break;
+      case 'ins': L.splice(i + 1, 0, nextLevelAfter(i)); break;
+    }
+    setDirty(true); renderRows();
+  });
+
+  function nextLevelAfter(i) {
+    let prev = null;
+    for (let j = i; j >= 0; j--) if (draft.levels[j].type === 'level') { prev = draft.levels[j]; break; }
+    if (!prev) return { type: 'level', sb: 100, bb: 200, ante: 0, minutes: 20 };
+    const bb = niceUp(prev.bb * 1.3);
+    return { type: 'level', sb: Math.floor(bb / 2), bb, ante: prev.ante ? (prev.ante === prev.bb ? bb : niceNearest(bb / 8)) : 0, minutes: prev.minutes };
+  }
+
+  $('btnAddLevel').onclick = () => { draft.levels.push(nextLevelAfter(draft.levels.length - 1)); setDirty(true); renderRows(); };
+  $('btnAddBreak').onclick = () => { draft.levels.push({ type: 'break', minutes: 10 }); setDirty(true); renderRows(); };
+
+  $('btnGenerate').onclick = () => {
+    if (draft.levels.length && !confirm('현재 블라인드 구조를 새로 생성한 구조로 대체할까요?')) return;
+    const n = id => Number($(id).value);
+    draft.levels = generate({
+      startBB: Math.max(2, n('gStartBB')), count: Math.min(100, Math.max(1, n('gCount'))),
+      minutes: Math.max(1, n('gMin')), mult: Math.max(1.05, n('gMult')),
+      anteMode: $('gAnte').value, anteFrom: Math.max(1, n('gAnteFrom')),
+      breakEvery: Math.max(0, n('gBreakEvery')), breakMin: Math.max(1, n('gBreakMin')),
+    });
+    setDirty(true); renderRows();
+  };
+
+  $('btnSave').onclick = () => {
+    if (!draft.name.trim()) { alert('템플릿 이름을 입력하세요.'); return; }
+    if (!draft.levels.some(l => l.type === 'level')) { alert('레벨을 1개 이상 추가하세요.'); return; }
+    const idx = templates.findIndex(t => t.id === draft.id);
+    if (idx >= 0) templates[idx] = clone(draft); else templates.push(clone(draft));
+    saveTemplates(); setDirty(false);
+    if (clock.templateId === draft.id) {
+      normalizeClock();
+      if (!clock.running) clock.remainingMs = Math.min(clock.remainingMs, levelMs(clock.index));
+      saveClock();
+    }
+    renderEditor(); renderClockSelect(); lastStructureKey = ''; render();
+  };
+
+  $('btnUseNow').onclick = () => {
+    if (dirty) { alert('먼저 저장해 주세요.'); return; }
+    if (!confirm(`"${draft.name}" 템플릿으로 타이머를 시작 준비할까요? (레벨 1로 초기화)`)) return;
+    clock = { templateId: draft.id, index: 0, remainingMs: null, running: false, endAt: 0 };
+    normalizeClock(); saveClock(); renderClockSelect(); render();
+    document.querySelector('.tab[data-tab="display"]').click();
+  };
+
+  $('btnNew').onclick = () => {
+    if (dirty && !confirm('저장하지 않은 변경사항이 있습니다. 버릴까요?')) return;
+    const t = { id: uid(), name: '새 템플릿', levels: generate({ startBB: 200, count: 12, minutes: 20, mult: 1.5, anteMode: 'bb', anteFrom: 3, breakEvery: 4, breakMin: 10 }) };
+    templates.push(t); saveTemplates(); setDirty(false);
+    editId = t.id; draft = clone(t); renderEditor(); renderClockSelect();
+    $('tplName').select();
+  };
+
+  $('btnDup').onclick = () => {
+    const t = clone(draft); t.id = uid(); t.name = draft.name + ' (복사본)';
+    templates.push(t); saveTemplates(); setDirty(false);
+    editId = t.id; draft = clone(t); renderEditor(); renderClockSelect();
+  };
+
+  $('btnDelete').onclick = () => {
+    if (templates.length <= 1) { alert('마지막 템플릿은 삭제할 수 없습니다.'); return; }
+    if (!confirm(`"${draft.name}" 템플릿을 삭제할까요?`)) return;
+    templates = templates.filter(t => t.id !== editId); saveTemplates();
+    if (clock.templateId === editId) {
+      clock = { templateId: templates[0].id, index: 0, remainingMs: null, running: false, endAt: 0 };
+      normalizeClock(); saveClock();
+    }
+    setDirty(false); draft = null; renderEditor(); renderClockSelect(); lastStructureKey = ''; render();
+  };
+
+  $('btnExport').onclick = () => {
+    const blob = new Blob([JSON.stringify({ name: draft.name, levels: draft.levels }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${draft.name.replace(/[\\/:*?"<>|]/g, '_')}.json`;
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  $('btnImport').onclick = () => $('importFile').click();
+  $('importFile').onchange = async e => {
+    const file = e.target.files[0]; e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (!Array.isArray(data.levels)) throw new Error('levels 배열이 없습니다');
+      const levels = data.levels.map(l => l.type === 'break'
+        ? { type: 'break', minutes: +l.minutes || 10 }
+        : { type: 'level', sb: +l.sb || 0, bb: +l.bb || 0, ante: +l.ante || 0, minutes: +l.minutes || 20 });
+      const t = { id: uid(), name: data.name || file.name.replace(/\.json$/i, ''), levels };
+      templates.push(t); saveTemplates(); setDirty(false);
+      editId = t.id; draft = clone(t); renderEditor(); renderClockSelect();
+    } catch (err) {
+      alert('가져오기 실패: ' + err.message);
+    }
+  };
+
+  // ---------- 펍 포스터로 불러오기 ----------
+  const LS_POSTER = 'holdem.posterAI';
+  const posterCfg = load(LS_POSTER) || { key: '', model: 'claude-sonnet-5-5', defMin: 20 };
+  let posterImage = null; // { data(base64), mediaType }
+
+  const POSTER_PROMPT = `이 이미지는 홀덤 펍의 토너먼트 포스터입니다. 블라인드 스트럭쳐 표를 읽어서 아래 JSON 형식으로만 답하세요. 설명이나 코드블록 없이 JSON만 출력합니다.
+{"name":"토너먼트 이름(포스터 제목, 없으면 빈 문자열)","levels":[{"type":"level","sb":100,"bb":200,"ante":200,"minutes":20},{"type":"break","minutes":10}]}
+규칙:
+- 표에 나온 순서 그대로 모든 레벨을 넣습니다. 휴식(Break, 브레이크, 휴식, 컬러업 등)은 표의 그 위치에 {"type":"break","minutes":N}으로 넣습니다.
+- 숫자는 쉼표 없는 정수로 씁니다. 1K=1000, 1.5K=1500, 1M=1000000, 1만=10000
+- 앤티가 없으면 0. 앤티 칸은 없지만 "BB 앤티"라고 적혀 있으면 ante는 bb와 같게 씁니다.
+- 레벨 시간이 표에 없고 포스터 다른 곳(예: "블라인드 업 15분")에 있으면 그 값을 모든 레벨에 씁니다. 어디에도 없으면 null.
+- 시작 스택, 바이인, 레이트 레지스트레이션, 리엔트리 같은 정보는 넣지 않습니다.
+- 블라인드 표가 보이지 않으면 {"error":"이유"} 만 출력합니다.`;
+
+  function setPosterStatus(text, cls = '') {
+    const el = $('posterStatus');
+    el.textContent = text;
+    el.className = 'poster-status ' + cls;
+  }
+
+  // 1K, 1.5k, 2만, 1,000 같은 표기를 숫자로
+  function parseAmount(v) {
+    if (typeof v === 'number') return Math.round(v);
+    if (v == null) return 0;
+    const m = String(v).replace(/[,\s]/g, '').match(/^(\d+(?:\.\d+)?)([kKmM]|만|천)?$/);
+    if (!m) return 0;
+    const mul = { k: 1e3, K: 1e3, m: 1e6, M: 1e6, '만': 1e4, '천': 1e3 }[m[2]] || 1;
+    return Math.round(parseFloat(m[1]) * mul);
+  }
+
+  function cleanLevels(raw, defMin) {
+    const out = [];
+    for (const l of raw || []) {
+      if (!l) continue;
+      const min = parseAmount(l.minutes) || 0;
+      if (l.type === 'break') { out.push({ type: 'break', minutes: min || 10 }); continue; }
+      const bb = parseAmount(l.bb);
+      if (!bb) continue;
+      const sb = parseAmount(l.sb) || Math.floor(bb / 2);
+      out.push({ type: 'level', sb, bb, ante: parseAmount(l.ante), minutes: min || defMin });
+    }
+    // 앞뒤에 붙은 휴식은 제거
+    while (out.length && out[0].type === 'break') out.shift();
+    while (out.length && out[out.length - 1].type === 'break') out.pop();
+    return out;
+  }
+
+  // 사람이 옮겨 적은 표 / 아무 텍스트 → 레벨 목록 (최대한 관대하게)
+  function parseStructureText(text, defMin) {
+    const levels = [];
+    let lastMin = defMin;
+    const NUM = /(\d[\d,]*(?:\.\d+)?)\s*([kKmM](?![a-zA-Z])|만|천)?/g;
+    for (let line of text.split(/\r?\n/)) {
+      line = line.trim();
+      if (!line) continue;
+      // 시간: "20분", "20min", "20m", "20'"
+      let minutes = null;
+      line = line.replace(/(\d+)\s*(분|mins?|minutes?|')/i, (_, n) => { minutes = +n; return ' '; });
+      if (/break|브레이크|휴식|쉬는|colou?r\s*up|컬러\s*업/i.test(line)) {
+        const n = line.match(/\d+/);
+        levels.push({ type: 'break', minutes: minutes || (n ? +n[0] : 10) });
+        continue;
+      }
+      let sb, bb, rest;
+      const pair = line.match(/(\d[\d,]*(?:\.\d+)?\s*(?:[kKmM]|만|천)?)\s*[\/\-~]\s*(\d[\d,]*(?:\.\d+)?\s*(?:[kKmM]|만|천)?)/);
+      if (pair) {
+        sb = parseAmount(pair[1]); bb = parseAmount(pair[2]);
+        rest = [...line.slice(pair.index + pair[0].length).matchAll(NUM)].map(m => parseAmount(m[1] + (m[2] || '')));
+      } else {
+        let nums = [...line.matchAll(NUM)].map(m => parseAmount(m[1] + (m[2] || '')));
+        if (nums.length < 2) continue;
+        // 맨 앞이 레벨 번호처럼 보이면 버림 (예: "3  200 400 400")
+        if (nums.length >= 3 && nums[0] <= 60 && nums[0] < nums[1] && nums[1] <= nums[2]) nums = nums.slice(1);
+        [sb, bb, ...rest] = nums;
+      }
+      if (!bb || bb < sb) continue;
+      let ante = 0;
+      if (rest.length >= 2) { ante = rest[0]; if (minutes == null && rest[1] <= 180) minutes = rest[1]; }
+      else if (rest.length === 1) {
+        // 숫자 하나만 남으면: BB의 1/20 이상이면 앤티, 아니면 시간
+        if (rest[0] >= bb / 20 || minutes != null) ante = rest[0];
+        else if (rest[0] <= 180) minutes = rest[0];
+      }
+      if (minutes) lastMin = minutes;
+      levels.push({ type: 'level', sb, bb, ante, minutes: minutes || lastMin });
+    }
+    return cleanLevels(levels, defMin);
+  }
+
+  function parseAnyStructure(text, defMin) {
+    // 맥/메신저에서 복사하면 " 가 “ ” 로 바뀌는 경우가 많아서 먼저 되돌림
+    const s = text.trim()
+      .replace(/[“”„‟″«»＂]/g, '"')
+      .replace(/[‘’‚‛′]/g, "'")
+      .replace(/ /g, ' ');
+    const a = s.indexOf('{'), b = s.lastIndexOf('}');
+    if (a >= 0 && b > a && /levels|error/.test(s)) {
+      let data = null;
+      try { data = JSON.parse(s.slice(a, b + 1)); } catch { /* 깨진 JSON이면 아래에서 조각조각 읽음 */ }
+      if (data) {
+        if (data.error) throw new Error(data.error);
+        return { name: String(data.name || '').trim(), levels: cleanLevels(data.levels, defMin) };
+      }
+      // JSON이 살짝 깨졌어도 {type, sb, bb, ante, minutes} 묶음을 하나씩 찾아 읽기
+      const levels = [...s.matchAll(/\{[^{}]*\}/g)].map(m => {
+        const o = {};
+        for (const kv of m[0].matchAll(/(type|sb|bb|ante|minutes)\W+([\w.,]+)/gi)) o[kv[1].toLowerCase()] = kv[2].replace(/,$/, '');
+        return o;
+      }).filter(o => o.type || o.bb);
+      const nm = s.match(/name\W+([^"'\n]*)/);
+      if (levels.length) return { name: nm ? nm[1].trim() : '', levels: cleanLevels(levels, defMin) };
+    }
+    return { name: '', levels: parseStructureText(s, defMin) };
+  }
+
+  function createTemplateFromPoster(name, levels) {
+    if (!levels.some(l => l.type === 'level')) throw new Error('블라인드 레벨을 찾지 못했어요.');
+    if (dirty && !confirm('저장하지 않은 변경사항이 있습니다. 버리고 새 템플릿을 만들까요?')) return false;
+    const d = new Date();
+    const t = { id: uid(), name: name || `포스터 ${d.getMonth() + 1}/${d.getDate()}`, levels };
+    templates.push(t); saveTemplates(); setDirty(false);
+    editId = t.id; draft = clone(t); renderEditor(); renderClockSelect();
+    const lv = levels.filter(l => l.type === 'level').length;
+    setPosterStatus(`✓ "${t.name}" 템플릿을 만들었어요 (${lv}레벨, 휴식 ${levels.length - lv}회). 아래 표를 포스터와 한 번 대조해 보세요.`, 'ok');
+    return true;
+  }
+
+  // 이미지 → 긴 변 1568px JPEG (API 용량·비용 절약)
+  function loadPosterImage(file) {
+    if (!file || !file.type.startsWith('image/')) { setPosterStatus('이미지 파일이 아니에요.', 'err'); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      const dataUrl = c.toDataURL('image/jpeg', 0.9);
+      posterImage = { data: dataUrl.split(',')[1], mediaType: 'image/jpeg' };
+      $('posterPreview').innerHTML = `<img src="${dataUrl}" alt="포스터">`;
+      $('posterDropText').textContent = '다른 사진으로 바꾸려면 다시 누르세요';
+      $('btnPosterRead').disabled = false;
+      setPosterStatus(posterCfg.key ? '' : 'API 키가 없으면 아래 "API 키 없이 쓰기"를 이용하세요.');
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => { setPosterStatus('이미지를 열 수 없어요. (아이폰 HEIC라면 JPG로 바꿔 주세요)', 'err'); URL.revokeObjectURL(url); };
+    img.src = url;
+  }
+
+  async function readPosterWithAI() {
+    if (!posterImage) return;
+    if (!posterCfg.key) { $('posterKeyBox').style.display = ''; setPosterStatus('먼저 Claude API 키를 입력해 주세요.', 'err'); $('posterApiKey').focus(); return; }
+    const btn = $('btnPosterRead');
+    btn.disabled = true;
+    setPosterStatus('⏳ 포스터 읽는 중… (10~30초)');
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': posterCfg.key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: posterCfg.model || 'claude-sonnet-5-5',
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: posterImage.mediaType, data: posterImage.data } },
+            { type: 'text', text: POSTER_PROMPT },
+          ] }],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data.error?.message || res.statusText;
+        throw new Error(res.status === 401 ? 'API 키가 올바르지 않아요.' : `API 오류 (${res.status}): ${msg}`);
+      }
+      const text = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+      $('posterText').value = text; // 결과를 텍스트 칸에도 남겨서 손으로 고칠 수 있게
+      const { name, levels } = parseAnyStructure(text, posterCfg.defMin || 20);
+      createTemplateFromPoster(name, levels);
+    } catch (err) {
+      setPosterStatus('읽기 실패: ' + (err.message === 'Failed to fetch' ? '인터넷 연결을 확인해 주세요.' : err.message), 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  $('posterApiKey').value = posterCfg.key || '';
+  $('posterModel').value = posterCfg.model || 'claude-sonnet-5-5';
+  $('posterDefMin').value = posterCfg.defMin || 20;
+  const savePosterCfg = () => {
+    posterCfg.key = $('posterApiKey').value.trim();
+    posterCfg.model = $('posterModel').value.trim() || 'claude-sonnet-5-5';
+    posterCfg.defMin = Math.max(1, Number($('posterDefMin').value) || 20);
+    if (!REMOTE_VIEW) localStorage.setItem(LS_POSTER, JSON.stringify(posterCfg));
+  };
+  ['posterApiKey', 'posterModel', 'posterDefMin'].forEach(id => $(id).addEventListener('change', savePosterCfg));
+  $('btnPosterKey').onclick = () => {
+    const box = $('posterKeyBox');
+    box.style.display = box.style.display === 'none' ? '' : 'none';
+  };
+
+  const drop = $('posterDrop');
+  drop.onclick = () => $('posterFile').click();
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('posterFile').click(); } };
+  $('posterFile').onchange = e => { loadPosterImage(e.target.files[0]); e.target.value = ''; };
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('over');
+    loadPosterImage(e.dataTransfer.files[0]);
+  });
+  document.addEventListener('paste', e => {
+    if (!$('editor').classList.contains('active')) return;
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    loadPosterImage(item.getAsFile());
+  });
+
+  $('btnPosterRead').onclick = readPosterWithAI;
+  $('btnPosterPrompt').onclick = async () => {
+    try { await navigator.clipboard.writeText(POSTER_PROMPT); }
+    catch { const ta = $('posterText'); const old = ta.value; ta.value = POSTER_PROMPT; ta.select(); document.execCommand('copy'); ta.value = old; }
+    $('btnPosterPrompt').textContent = '복사됨 ✓';
+    setTimeout(() => { $('btnPosterPrompt').textContent = '📋 프롬프트 복사'; }, 1500);
+  };
+  $('btnPosterApply').onclick = () => {
+    const text = $('posterText').value;
+    if (!text.trim()) { setPosterStatus('붙여넣은 내용이 없어요.', 'err'); return; }
+    try {
+      const { name, levels } = parseAnyStructure(text, Math.max(1, Number($('posterDefMin').value) || 20));
+      createTemplateFromPoster(name, levels);
+    } catch (err) {
+      setPosterStatus('적용 실패: ' + err.message, 'err');
+    }
+  };
+
+  window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+  $('btnOverlay').onclick = () => {
+    window.open(location.pathname + '?chroma', 'holdemOverlay', 'width=1280,height=720');
+  };
+
+  // 같은 브라우저의 다른 창(조작용 ↔ 방송용)과 상태 동기화
+  window.addEventListener('storage', e => {
+    if (e.key === LS_CLOCK) {
+      clock = load(LS_CLOCK) || clock;
+    } else if (e.key === LS_TEMPLATES) {
+      templates = load(LS_TEMPLATES) || templates;
+      renderClockSelect();
+    } else if (e.key === LS_SETTINGS) {
+      settings = load(LS_SETTINGS) || settings;
+      updateSoundBtn();
+      $('eventName').value = settings.eventName || '';
+    } else return;
+    normalizeClock(); lastStructureKey = ''; render();
+  });
+
+  // ---------- 원격 연동 (MQTT 공개 브로커) ----------
+  // 조작 기기: 상태가 바뀔 때마다 retain 메시지로 발행 → 방송 화면은 접속 즉시 최신 상태를 받음.
+  // 방송 화면은 levels + endAt으로 직접 카운트다운하므로 조작 기기가 잠들어도 계속 진행됨.
+  let mq = null;
+  let pubTimer = 0;
+  const topic = () => TOPIC_PREFIX + (REMOTE_VIEW ? ROOM_PARAM : settings.room);
+
+  function setSyncStatus(text, cls) {
+    const el = $('syncStatus');
+    el.textContent = text;
+    el.className = 'sync-status ' + cls;
+  }
+
+  function connectMqtt() {
+    if (mq) return;
+    if (!window.mqtt) { setSyncStatus('통신 라이브러리 로드 실패 (인터넷 확인)', 'err'); return; }
+    setSyncStatus('연결 중…', 'off');
+    mq = mqtt.connect(BROKER, { clientId: 'hbc_' + randomRoom(), reconnectPeriod: 3000, connectTimeout: 10000 });
+    mq.on('connect', () => {
+      setSyncStatus('연결됨', 'on');
+      if (REMOTE_VIEW) mq.subscribe(topic(), { qos: 1 });
+      else publishState();
+    });
+    mq.on('reconnect', () => setSyncStatus('재연결 중…', 'off'));
+    mq.on('offline', () => setSyncStatus('오프라인', 'err'));
+    mq.on('error', err => setSyncStatus('오류: ' + err.message, 'err'));
+    mq.on('message', (_t, payload) => { if (REMOTE_VIEW) applyRemote(payload); });
+  }
+
+  function disconnectMqtt() {
+    if (mq) { mq.end(true); mq = null; }
+    setSyncStatus('꺼짐', 'off');
+  }
+
+  function publishState() {
+    if (REMOTE_VIEW || !settings.sync || !mq) return;
+    clearTimeout(pubTimer);
+    pubTimer = setTimeout(() => {
+      const msg = {
+        v: 1, sentAt: Date.now(), name: settings.eventName || '',
+        levels: curTpl().levels, index: clock.index, running: clock.running,
+        endAt: clock.endAt, remainingMs: clock.remainingMs,
+      };
+      mq.publish(topic(), JSON.stringify(msg), { qos: 1, retain: true });
+    }, 150);
+  }
+
+  function applyRemote(payload) {
+    let m;
+    try { m = JSON.parse(payload.toString()); } catch { return; }
+    if (!m || !Array.isArray(m.levels)) return;
+    const levels = m.levels.map(l => l.type === 'break'
+      ? { type: 'break', minutes: +l.minutes || 0 }
+      : { type: 'level', sb: +l.sb || 0, bb: +l.bb || 0, ante: +l.ante || 0, minutes: +l.minutes || 0 });
+    templates = [{ id: 'remote', name: '', levels }];
+    clock = { templateId: 'remote', index: Math.max(0, m.index | 0), running: !!m.running, endAt: +m.endAt || 0, remainingMs: +m.remainingMs || 0 };
+    settings.eventName = String(m.name || '');
+    warnedIndex = -1;
+    normalizeClock(); lastStructureKey = ''; render();
+  }
+
+  function overlayUrl(mode) {
+    const base = location.origin + location.pathname;
+    const broker = params.get('broker') ? '&broker=' + encodeURIComponent(BROKER) : '';
+    return `${base}?${mode}&room=${settings.room}${broker}`;
+  }
+
+  function renderSyncDialog() {
+    $('syncEnabled').checked = !!settings.sync;
+    $('roomCode').value = settings.room;
+    $('urlOverlay').value = overlayUrl('overlay');
+    $('urlChroma').value = overlayUrl('chroma');
+    if (location.protocol === 'file:') {
+      $('syncHint').innerHTML = '⚠ 지금은 PC의 파일로 열려 있어서 다른 기기에서 이 URL을 열 수 없습니다.<br>' +
+        '폴더를 웹에 올린 뒤(예: GitHub Pages, Netlify) 그 주소로 열어야 폰 ↔ 방송 PC 연동이 됩니다.';
+    }
+  }
+
+  $('btnSync').onclick = () => { renderSyncDialog(); $('syncDialog').showModal(); };
+  $('btnSyncClose').onclick = () => $('syncDialog').close();
+  $('syncEnabled').onchange = e => {
+    settings.sync = e.target.checked;
+    save(LS_SETTINGS, settings);
+    if (settings.sync) connectMqtt(); else disconnectMqtt();
+  };
+  $('btnNewRoom').onclick = () => {
+    if (!confirm('방 코드를 바꾸면 방송 화면에 넣은 URL도 새로 바꿔야 합니다. 계속할까요?')) return;
+    settings.room = randomRoom();
+    save(LS_SETTINGS, settings);
+    if (mq) { disconnectMqtt(); connectMqtt(); }
+    renderSyncDialog();
+  };
+  document.querySelectorAll('[data-copy]').forEach(btn => {
+    btn.onclick = async () => {
+      const input = $(btn.dataset.copy);
+      try { await navigator.clipboard.writeText(input.value); }
+      catch { input.select(); document.execCommand('copy'); }
+      btn.textContent = '복사됨';
+      setTimeout(() => { btn.textContent = '복사'; }, 1500);
+    };
+  });
+
+  // 앱으로 돌아왔을 때 끊겼던 연결 복구 + 최신 상태 다시 발행
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    tick();
+    if (mq && !mq.connected) mq.reconnect();
+    publishState();
+  });
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  // ---------- 초기화 ----------
+  save(LS_SETTINGS, settings);
+  if (REMOTE_VIEW || settings.sync) connectMqtt();
+  normalizeClock();
+  renderClockSelect();
+  updateSoundBtn();
+  draft = clone(templates.find(t => t.id === editId));
+  render();
+  setInterval(tick, 200);
+})();
+</script>
+</body>
+</html>
