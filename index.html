@@ -429,11 +429,16 @@
   const clone = o => JSON.parse(JSON.stringify(o));
 
   // ---------- 방송용 모드 ----------
+  // 주소의 ?뒤와 #뒤를 모두 읽음 (방송 프로그램이 일부를 떼어내는 경우 대비)
   const params = new URLSearchParams(location.search);
-  const OVERLAY = params.has('overlay') || params.has('chroma');
+  new URLSearchParams(location.hash.replace(/^#/, '')).forEach((v, k) => { if (!params.has(k)) params.set(k, v); });
+  const MODE = (params.get('mode') || '').toLowerCase();
+  const IS_CHROMA = params.has('chroma') || MODE === 'chroma';
+  // room= 이 붙어 있으면 무조건 방송용 화면 (조작 기기 주소에는 room이 없음)
+  const OVERLAY = IS_CHROMA || params.has('overlay') || MODE === 'overlay' || params.has('room');
   if (OVERLAY) {
     document.body.classList.add('overlay');
-    if (params.has('chroma')) {
+    if (IS_CHROMA) {
       const color = '#' + (params.get('chroma') || '00ff00').replace('#', '');
       document.body.classList.add('chroma');
       document.documentElement.style.background = document.body.style.background = color;
@@ -1263,7 +1268,7 @@
   function overlayUrl(mode) {
     const base = location.origin + location.pathname;
     const broker = params.get('broker') ? '&broker=' + encodeURIComponent(BROKER) : '';
-    return `${base}?${mode}&room=${settings.room}${broker}`;
+    return `${base}?mode=${mode}&room=${settings.room}${broker}`;
   }
 
   function renderSyncDialog() {
