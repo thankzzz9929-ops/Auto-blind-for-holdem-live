@@ -150,6 +150,15 @@
   body.overlay .blind-box span { display: none; }
   /* 방송용 숫자 크기: 기본 0.5배. 주소에 &size=0.7 처럼 붙이면 그 배율로 바뀜 */
   body.overlay .blind-box b, body.overlay .slash { font-size: calc(clamp(60px, 12vw, 220px) * var(--ov-scale, 0.5)); }
+  /* 방송용 레벨 표시 (숫자 위에 작게). 주소에 &lv=0 을 붙이면 숨김 */
+  body.overlay .level-label {
+    display: block; margin: 0; line-height: 1; letter-spacing: .08em;
+    font-family: 'BlindFont', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700;
+    font-size: calc(clamp(60px, 12vw, 220px) * var(--ov-scale, 0.5) * 0.6);
+  }
+  /* 레벨을 블라인드 숫자 앞에 한 줄로: "LV 3   100 / 200" */
+  body.overlay .clock { flex-direction: row; flex-wrap: nowrap; gap: calc(clamp(60px, 12vw, 220px) * var(--ov-scale, 0.5) * 0.35); }
+  body.overlay .level-label.break, body.overlay.no-lv .level-label { display: none; }
   body.overlay .break-msg { font-size: calc(clamp(40px, 6vw, 110px) * var(--ov-scale, 0.5) * 1.6); }
   body.overlay .slash { display: block; }
   body.chroma .progress { background: #111; }
@@ -465,6 +474,7 @@
     document.body.classList.add('overlay');
     const sz = parseFloat(params.get('size'));
     if (sz > 0 && sz <= 5) document.documentElement.style.setProperty('--ov-scale', sz);
+    if (params.get('lv') === '0') document.body.classList.add('no-lv');
     if (IS_CHROMA) {
       const color = '#' + (params.get('chroma') || '00ff00').replace('#', '');
       document.body.classList.add('chroma');
@@ -670,7 +680,8 @@
     const levels = t.levels;
     $('eventTitle').textContent = settings.eventName || '';
     if (!levels.length) {
-      $('levelLabel').textContent = REMOTE_VIEW ? '연결 대기 중…' : '레벨이 없습니다';
+      // 방송 화면에는 대기 문구를 띄우지 않음
+      $('levelLabel').textContent = OVERLAY ? '' : '레벨이 없습니다';
       $('timer').textContent = '00:00';
       $('blindsBox').style.display = 'none';
       $('breakMsg').style.display = 'none';
@@ -682,7 +693,7 @@
     const total = levelMs(idx);
     const isBreak = lv.type === 'break';
 
-    $('levelLabel').textContent = isBreak ? 'BREAK' : `LEVEL ${levelNumber(levels, idx)}`;
+    $('levelLabel').textContent = isBreak ? 'BREAK' : `${OVERLAY ? 'LV' : 'LEVEL'} ${levelNumber(levels, idx)}`;
     $('levelLabel').classList.toggle('break', isBreak);
     $('timer').textContent = formatTime(rem);
     $('timer').classList.toggle('warn', clock.running && rem <= 60000 && rem > 0);
